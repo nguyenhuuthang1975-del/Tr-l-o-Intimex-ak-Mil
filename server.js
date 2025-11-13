@@ -1,112 +1,186 @@
-import express from "express";
-import cors from "cors";
-import fs from "fs";
-import path from "path";
-import dotenv from "dotenv";
-import axios from "axios";
-import yaml from "js-yaml";
+// server.js
+// Trợ lý Intimex Đắk Mil + đọc dữ liệu nhân sự từ Excel trên intimexdakmil.com
 
-dotenv.config();
-const app = express();
-app.use(express.json({ limit: "1mb" }));
-app.use(cors());
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
+const yaml = require("js-yaml");
+const axios = require("axios");
+const XLSX = require("xlsx");
+const OpenAI = require("openai");
 
-const PORT = process.env.PORT || 3000;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-if (!OPENAI_API_KEY) {
-  console.error("ERROR: OPENAI_API_KEY is missing. Add it to .env");
+// ==== CẤU HÌNH CƠ BẢN ===================================================
+
+if (!process.env.OPENAI_API_KEY) {
+  console.error("ERROR: OPENAI_API_KEY is missing. Add it to Render Environment.");
   process.exit(1);
 }
 
-// load YAML config
-const cfgPath = path.join(process.cwd(), "config", "assistant.yaml");
-let CFG = {};
-function loadConfig() {
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Đường dẫn file cấu hình trợ lý
+const ASSISTANT_CONFIG_PATH = process.env.ASSISTANT_CONFIG_PATH || path.join(__dirname, "config", "assistant.yaml");
+
+// URL file Excel nhân sự
+// ⚠ Nếu URL thực của bạn KHÔNG có public_html thì sửa lại thành:
+// const EXCEL_URL = "https://intimexdakmil.com/data/Bang_nhan_su_mo_rong.xlsx";
+const EXCEL_URL = "https://intimexdakmil.com/public_html/data/Bang_nhan_su_mo_rong.xlsx";
+
+// ==== HÀM ĐỌC CẤU HÌNH TRỢ LÝ ===========================================
+
+let assistantConfig = null;
+
+function loadAssistantConfig() {
   try {
-    const raw = fs.readFileSync(cfgPath, "utf8");
-    CFG = yaml.load(raw);
-    console.log("[CONFIG] Loaded:", {
-      name: CFG?.name,
-      model: CFG?.model,
-      temperature: CFG?.temperature,
-    });
-  } catch (e) {
-    console.error("Cannot load config/assistant.yaml:", e.message);
-    process.exit(1);
+    const raw = fs.readFileSync(ASSISTANT_CONFIG_PATH, "utf8");
+    assistantConfig = yaml.load(raw);
+    console.log("Assistant config loaded:", ASSISTANT_CONFIG_PATH);
+  } catch (err) {
+    console.error("Không đọc được config/assistant.yaml, dùng cấu hình mặc định.", err.message);
+    assistantConfig = {
+      model: "gpt-4.1-mini",
+      temperature: 0.2,
+      max_output_tokens: 800,
+      system_prompt: "Bạn là trợ lý ảo Intimex Đắk Mil.",
+    };
   }
 }
-loadConfig();
 
-app.get("/", (req, res) => res.send("Intimex Bridge is running."));
-app.get("/health", (req, res) => res.json({ ok: true, name: CFG?.name, model: CFG?.model }));
+loadAssistantConfig();
+
+// ==== HÀM ĐỌC EXCEL TỪ URL ==============================================
+
+async function loadExcelFromUrl(url) {
+  const response = await axios.get(url, {
+    responseType: "arraybuffer",
+  });
+  const workbook = XLSX.read(response.data, { type: "buffer" });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  return rows;
+}
+
+// Rút gọn dữ liệu Excel để không quá dài (tránh tràn token)
+function buildHrContext(rows) {
+  if (!rows || rows.length === 0) return "Không có dữ liệu nhân sự nào được đọc từ Excel.";
+
+  // Lấy tối đa 50 dòng đầu để tránh prompt quá lớn
+  const limited = rows.slice(0, 50);
+
+  // Có thể chọn ra một số cột chính nếu cần (vd: Tên, Bộ phận, Chức vụ,…)
+  // Ở đây mình giữ nguyên toàn bộ cột, nhưng bạn có thể tùy chỉnh:
+  // const mapped = limited.map(r => ({
+  //   Ho_ten: r["HỌ TÊN"],
+  //   Bo_phan: r["BỘ PHẬN"],
+  //   Chuc_vu: r["CHỨC VỤ"],
+  //   SDT: r["SỐ ĐIỆN THOẠI"],
+  //   Ghi_chu: r["GHI CHÚ"]
+  // }));
+
+  const jsonText = JSON.stringify(limited, null, 2);
+
+  // Nếu vẫn quá dài, cắt bớt cho an toàn
+  const MAX_CHARS = 8000;
+  if (jsonText.length > MAX_CHARS) {
+    return jsonText.slice(0, MAX_CHARS) + "\n... (đã rút gọn bớt dòng nhân sự)";
+  }
+
+  return jsonText;
+}
+
+// ==== ROUTES ============================================================
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    model: assistantConfig?.model || "gpt-4.1-mini",
+    excel_url: EXCEL_URL,
+  });
+});
 
 app.post("/chat", async (req, res) => {
-  const { message, device_id, session_id } = req.body || {};
-  if (!message) return res.status(400).json({ error: "Missing 'message'" });
+  const { message, device_id } = req.body || {};
 
-  const systemPrompt = CFG?.system_prompt || "Bạn là trợ lý ảo.";
-  const model = CFG?.model || "gpt-4.1-mini";
-  const temperature = CFG?.temperature ?? 0.4;
-  const max_output_tokens = CFG?.max_output_tokens ?? 512;
+  if (!message) {
+    return res.status(400).json({ error: "Thiếu trường 'message' trong body." });
+  }
 
   try {
-    // OpenAI Responses API
-    const r = await axios.post(
-      "https://api.openai.com/v1/responses",
-      {
-        model,
-        temperature,
-        max_output_tokens,
-        input: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message }
-        ]
-      },
-      {
-        headers: {
-          "Authorization": `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json"
+    // 1) Đọc dữ liệu Excel nhân sự
+    let hrRows = [];
+    let hrContext = "";
+    try {
+      hrRows = await loadExcelFromUrl(EXCEL_URL);
+      hrContext = buildHrContext(hrRows);
+      console.log(`Đã đọc ${hrRows.length} dòng nhân sự từ Excel.`);
+    } catch (excelErr) {
+      console.error("Lỗi khi tải/đọc file Excel:", excelErr.message);
+      hrContext = "Không đọc được file Excel nhân sự. Hãy trả lời mà không dựa trên dữ liệu Excel.";
+    }
+
+    // 2) Ghép system prompt
+    const baseSystemPrompt = assistantConfig.system_prompt || "Bạn là trợ lý ảo Intimex Đắk Mil.";
+    const excelInstruction = `
+Bạn được cung cấp một phần dữ liệu nhân sự (dạng JSON rút gọn) lấy từ file Excel nội bộ Intimex Đắk Mil.
+
+- Nếu người dùng hỏi về nhân sự (tên, bộ phận, chức vụ, số điện thoại, …) thì hãy tra cứu TRONG dữ liệu này.
+- Nếu không tìm thấy thông tin tương ứng trong dữ liệu, hãy nói rõ là "Không thấy dữ liệu trong bảng nhân sự" và KHÔNG được bịa.
+- Nếu câu hỏi không liên quan tới nhân sự, bạn có thể bỏ qua dữ liệu này và trả lời như một trợ lý bình thường.
+
+Dữ liệu JSON được truyền trong nội dung câu hỏi bên dưới.
+    `.trim();
+
+    const instructions = `${baseSystemPrompt}\n\n${excelInstruction}`;
+
+    // 3) Gọi OpenAI Responses API
+    const response = await client.responses.create({
+      model: assistantConfig.model || "gpt-4.1-mini",
+      temperature: assistantConfig.temperature ?? 0.2,
+      max_output_tokens: assistantConfig.max_output_tokens || 800,
+      instructions,
+      input: [
+        {
+          role: "user",
+          content: `
+Câu hỏi của người dùng:
+
+"${message}"
+
+Dữ liệu nhân sự (JSON rút gọn lấy từ Excel ${EXCEL_URL}):
+
+${hrContext}
+          `.trim(),
         },
-        timeout: 60000
-      }
-    );
+      ],
+    });
 
-    // Try to read text safely (covers different payload shapes)
-    let reply = "";
-    const data = r.data;
+    const replyText = response.output_text || "Xin lỗi, hiện tại tôi không tạo được trả lời.";
 
-    // Newer Responses API commonly returns output_text
-    if (typeof data.output_text === "string") {
-      reply = data.output_text;
-    }
-    // Fallback – explore nested content
-    if (!reply && Array.isArray(data.output)) {
-      const first = data.output[0];
-      if (first?.content && Array.isArray(first.content)) {
-        const t = first.content.find(c => c?.type === "output_text" || c?.type === "text");
-        reply = t?.text || "";
-      }
-    }
-    if (!reply && typeof data?.choices?.[0]?.message?.content === "string") {
-      reply = data.choices[0].message.content; // legacy fallback
-    }
-
-    res.json({ reply, model, device_id, session_id: session_id || null });
+    res.json({
+      reply: replyText,
+      model: assistantConfig.model || "gpt-4.1-mini",
+      device_id: device_id || null,
+    });
   } catch (err) {
-    console.error("OpenAI error:", err?.response?.data || err.message);
-    const status = err?.response?.status || 500;
-    res.status(status).json({ error: "Upstream error", detail: err?.response?.data || err.message });
+    console.error("Lỗi /chat:", err.response?.data || err.message);
+    res.status(500).json({
+      error: "Lỗi nội bộ server khi xử lý câu hỏi.",
+      details: err.message,
+    });
   }
 });
 
-// lightweight endpoint to hot-reload config without restarting (optional)
-app.post("/admin/reload-config", (req, res) => {
-  try {
-    loadConfig();
-    res.json({ ok: true, model: CFG?.model });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
+// ==== KHỞI ĐỘNG SERVER ==================================================
 
-app.listen(PORT, () => console.log(`Intimex Bridge listening on :${PORT}`));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Intimex assistant server is running on port ${PORT}`);
+});

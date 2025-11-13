@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Bridge server for ESP32 to OpenAI Responses API (Intimex Dak Mil)",
   "main": "server.js",
-  "type": "module",
   "scripts": {
     "start": "node server.js"
   },

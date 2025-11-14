@@ -322,16 +322,27 @@ ${relatedJson}
       sectionLabel = "PHAN_4_SO_LIEU";
       dataContext =
         "So lieu kinh doanh/tai chinh/KPI chua duoc ket noi. Backend can bo sung query du lieu phu hop.";
-    } else {
-      // ===== PHẦN 1: GIỚI THIỆU CÔNG TY =====
-      sectionLabel = "PHAN_1_GIOI_THIEU";
-      dataContext =
-        "Thong tin gioi thieu cong ty, linh vuc hoat dong, co cau to chuc... Backend co the bo sung them noi dung chi tiet o day.";
-    }
+   } else {
+  // ===== PHẦN 1: GIỚI THIỆU CÔNG TY =====
+  sectionLabel = "PHAN_1_GIOI_THIEU";
+  try {
+    const introRows = await getCompanyIntroRows();
+
+    // Nếu gioithieu.csv có dạng key,value,description,... thì cứ đưa hết cho model
+    const introJson = JSON.stringify(introRows, null, 2);
+
+    dataContext = `
+DU_LIEU_GIOI_THIEU_CONG_TY_CSV:
+${introJson}
+    `.trim();
   } catch (e) {
-    console.error("Lỗi khi chuẩn bị context:", e.message);
-    dataContext = "Loi khi doc du lieu noi bo.";
+    console.error("Lỗi đọc CSV giới thiệu công ty:", e.message);
+    dataContext =
+      "Khong doc duoc du lieu gioi thieu cong ty tu CSV (gioithieu.csv).";
   }
+}
+
+
 
   // 2) Ghép instructions từ assistant.yaml + nhấn mạnh section
   const baseSystemPrompt =

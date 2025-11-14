@@ -265,14 +265,15 @@ function classifyQuestion(message) {
 }
 
 // ===== ROUTES ===========================================================
-
 app.get("/health", async (req, res) => {
   res.json({
     status: "ok",
     model: assistantConfig.model,
     hr_csv_url: HR_CSV_URL,
+    company_intro_csv_url: COMPANY_INTRO_CSV_URL,
   });
 });
+
 
 // Route chính chatbot
 app.post("/chat", async (req, res) => {

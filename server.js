@@ -255,17 +255,31 @@ app.post("/chat", async (req, res) => {
   let dataContext = "";
 
   try {
-    if (section === 2) {
+       if (section === 2) {
       // ===== PHẦN 2: NHÂN SỰ – dùng CSV =====
       sectionLabel = "PHAN_2_NHAN_SU";
       try {
         const hrRows = await getHrRows();
+        const totalEmployees = hrRows.length;
+
+        // Lọc theo câu hỏi (tên, phòng ban, v.v.)
         const related = searchRows(message, hrRows);
-        dataContext = createContext(related);
+        const relatedJson = createContext(related);
+
+        // Ghép context: vừa có tổng số, vừa có JSON chi tiết (rút gọn)
+        dataContext = `
+TONG_SO_NHAN_SU: ${totalEmployees}
+/* Dong tren cho biet tong so nhan su theo du lieu CSV hien co. */
+
+DU_LIEU_NHAN_SU_CHI_TIET_JSON:
+${relatedJson}
+        `.trim();
       } catch (e) {
         console.error("Lỗi đọc CSV nhân sự:", e.message);
-        dataContext = "Không đọc được dữ liệu nhân sự từ CSV.";
+        dataContext =
+          "Không đọc được dữ liệu nhân sự từ CSV. Khong the tinh TONG_SO_NHAN_SU.";
       }
+
     } else if (section === 3) {
       // ===== PHẦN 3: QUY TRÌNH – TODO: nối vào tài liệu quy trình =====
       sectionLabel = "PHAN_3_QUY_TRINH";

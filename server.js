@@ -49,6 +49,38 @@ try {
       "Bạn là trợ lý ảo nội bộ Intimex Đắk Mil, hỗ trợ công ty, nhân sự, quy trình, số liệu.",
   };
 }
+// ===== CSV GIỚI THIỆU CÔNG TY (PHẦN 1) ================================
+
+const COMPANY_INTRO_CSV_URL =
+  "https://intimexdakmil.com/public_html/data/gioithieu.csv";
+
+let introCache = { rows: [], loadedAt: 0 };
+const INTRO_TTL_MS = 10 * 60 * 1000; // 10 phút
+
+async function getCompanyIntroRows() {
+  const now = Date.now();
+
+  if (introCache.rows.length && now - introCache.loadedAt < INTRO_TTL_MS) {
+    return introCache.rows;
+  }
+
+  console.log("Đang tải CSV giới thiệu công ty từ:", COMPANY_INTRO_CSV_URL);
+
+  const res = await axios.get(COMPANY_INTRO_CSV_URL, { responseType: "text" });
+
+  const records = parse(res.data, {
+    columns: true,
+    skip_empty_lines: true,
+  });
+
+  introCache = {
+    rows: records,
+    loadedAt: now,
+  };
+
+  console.log("Đã nạp CSV giới thiệu công ty:", records.length, "dòng");
+  return records;
+}
 
 // ===== CSV NHÂN SỰ (PHẦN 2) ============================================
 

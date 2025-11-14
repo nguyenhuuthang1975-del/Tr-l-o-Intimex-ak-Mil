@@ -1,5 +1,5 @@
 // server.js
-// Trợ lý Intimex Đắk Mil + đọc dữ liệu nhân sự từ Excel trên intimexdakmil.com
+// Trợ lý Intimex Đắk Mil + đọc dữ liệu nhân sự từ CSV trên intimexdakmil.com
 
 require("dotenv").config();
 const express = require("express");
@@ -27,12 +27,13 @@ app.use(cors());
 app.use(express.json());
 
 // Đường dẫn file cấu hình trợ lý
-const ASSISTANT_CONFIG_PATH = process.env.ASSISTANT_CONFIG_PATH || path.join(__dirname, "config", "assistant.yaml");
+const ASSISTANT_CONFIG_PATH =
+  process.env.ASSISTANT_CONFIG_PATH || path.join(__dirname, "config", "assistant.yaml");
 
-// URL file Excel nhân sự
-// ⚠ Nếu URL thực của bạn KHÔNG có public_html thì sửa lại thành:
-// const EXCEL_URL = "https://intimexdakmil.com/data/Bang_nhan_su_mo_rong.xlsx";
-const EXCEL_URL = "https://intimexdakmil.com/public_html/data/Bang_nhan_su_mo_rong.xlsx";
+// URL file CSV nhân sự (đúng theo bạn đã nói)
+const HR_CSV_URL =
+  process.env.HR_CSV_URL ||
+  "https://intimexdakmil.com/public_html/data/Bang_nhan_su_mo_rong.csv";
 
 // ==== HÀM ĐỌC CẤU HÌNH TRỢ LÝ ===========================================
 
@@ -49,45 +50,93 @@ function loadAssistantConfig() {
       model: "gpt-4.1-mini",
       temperature: 0.2,
       max_output_tokens: 800,
-      system_prompt: "Bạn là trợ lý ảo Intimex Đắk Mil.",
+      system_prompt: "Bạn là trợ lý ảo Intimex Đắk Mil, chuyên hỗ trợ các câu hỏi về nhân sự.",
     };
   }
 }
 
 loadAssistantConfig();
 
-// ==== HÀM ĐỌC EXCEL TỪ URL ==============================================
+// ==== HÀM ĐỌC CSV TỪ URL + CACHE =======================================
 
-async function loadExcelFromUrl(url) {
+// Cache để tránh mỗi câu hỏi lại tải CSV 1 lần
+let hrCache = {
+  rows: [],
+  loadedAt: 0,
+};
+const HR_CACHE_TTL_MS = 10 * 60 * 1000; // 10 phút
+
+async function loadHrFromUrl(url) {
   const response = await axios.get(url, {
     responseType: "arraybuffer",
   });
+
+  // XLSX có thể đọc được cả CSV/Excel từ buffer, tự detect định dạng
   const workbook = XLSX.read(response.data, { type: "buffer" });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
   return rows;
 }
 
-// Rút gọn dữ liệu Excel để không quá dài (tránh tràn token)
+async function getHrRows() {
+  const now = Date.now();
+  if (hrCache.rows.length && now - hrCache.loadedAt < HR_CACHE_TTL_MS) {
+    return hrCache.rows;
+  }
+
+  const rows = await loadHrFromUrl(HR_CSV_URL);
+  hrCache = {
+    rows,
+    loadedAt: now,
+  };
+  console.log(`Đã tải lại dữ liệu nhân sự: ${rows.length} dòng.`);
+  return rows;
+}
+
+// Tìm các dòng nhân sự có liên quan đến câu hỏi
+function searchHrRows(question, rows, limit = 50) {
+  if (!rows || rows.length === 0) return [];
+  if (!question || !question.trim()) return rows.slice(0, limit);
+
+  const q = question.toLowerCase();
+  const keywords = q.split(/\s+/).filter((w) => w.length > 1);
+
+  const results = [];
+
+  for (const row of rows) {
+    const line = Object.values(row).join(" ").toLowerCase();
+    let matched = false;
+
+    for (const kw of keywords) {
+      if (line.includes(kw)) {
+        matched = true;
+        break;
+      }
+    }
+
+    if (matched) {
+      results.push(row);
+      if (results.length >= limit) break;
+    }
+  }
+
+  // Nếu không tìm được gì, trả về vài dòng đầu để model vẫn biết cấu trúc dữ liệu
+  if (results.length === 0) {
+    return rows.slice(0, limit);
+  }
+
+  return results;
+}
+
+// Rút gọn dữ liệu nhân sự để đưa vào prompt
 function buildHrContext(rows) {
-  if (!rows || rows.length === 0) return "Không có dữ liệu nhân sự nào được đọc từ Excel.";
+  if (!rows || rows.length === 0) {
+    return "Không có dòng dữ liệu nhân sự phù hợp trong bảng.";
+  }
 
-  // Lấy tối đa 50 dòng đầu để tránh prompt quá lớn
   const limited = rows.slice(0, 50);
-
-  // Có thể chọn ra một số cột chính nếu cần (vd: Tên, Bộ phận, Chức vụ,…)
-  // Ở đây mình giữ nguyên toàn bộ cột, nhưng bạn có thể tùy chỉnh:
-  // const mapped = limited.map(r => ({
-  //   Ho_ten: r["HỌ TÊN"],
-  //   Bo_phan: r["BỘ PHẬN"],
-  //   Chuc_vu: r["CHỨC VỤ"],
-  //   SDT: r["SỐ ĐIỆN THOẠI"],
-  //   Ghi_chu: r["GHI CHÚ"]
-  // }));
-
   const jsonText = JSON.stringify(limited, null, 2);
 
-  // Nếu vẫn quá dài, cắt bớt cho an toàn
   const MAX_CHARS = 8000;
   if (jsonText.length > MAX_CHARS) {
     return jsonText.slice(0, MAX_CHARS) + "\n... (đã rút gọn bớt dòng nhân sự)";
@@ -98,11 +147,11 @@ function buildHrContext(rows) {
 
 // ==== ROUTES ============================================================
 
-app.get("/health", (req, res) => {
+app.get("/health", async (req, res) => {
   res.json({
     status: "ok",
     model: assistantConfig?.model || "gpt-4.1-mini",
-    excel_url: EXCEL_URL,
+    hr_csv_url: HR_CSV_URL,
   });
 });
 
@@ -114,31 +163,38 @@ app.post("/chat", async (req, res) => {
   }
 
   try {
-    // 1) Đọc dữ liệu Excel nhân sự
+    // 1) Đọc dữ liệu nhân sự từ CSV (có cache)
     let hrRows = [];
     let hrContext = "";
+
     try {
-      hrRows = await loadExcelFromUrl(EXCEL_URL);
-      hrContext = buildHrContext(hrRows);
-      console.log(`Đã đọc ${hrRows.length} dòng nhân sự từ Excel.`);
+      hrRows = await getHrRows();
+      const relatedRows = searchHrRows(message, hrRows);
+      hrContext = buildHrContext(relatedRows);
+      console.log(
+        `Đã đọc ${hrRows.length} dòng nhân sự từ CSV, chọn ${relatedRows.length} dòng liên quan.`
+      );
     } catch (excelErr) {
-      console.error("Lỗi khi tải/đọc file Excel:", excelErr.message);
-      hrContext = "Không đọc được file Excel nhân sự. Hãy trả lời mà không dựa trên dữ liệu Excel.";
+      console.error("Lỗi khi tải/đọc file CSV nhân sự:", excelErr.message);
+      hrContext =
+        "Không đọc được file nhân sự (CSV). Hãy trả lời mà không dựa trên dữ liệu nhân sự nội bộ.";
     }
 
-    // 2) Ghép system prompt
-    const baseSystemPrompt = assistantConfig.system_prompt || "Bạn là trợ lý ảo Intimex Đắk Mil.";
-    const excelInstruction = `
-Bạn được cung cấp một phần dữ liệu nhân sự (dạng JSON rút gọn) lấy từ file Excel nội bộ Intimex Đắk Mil.
+    // 2) Ghép system prompt + hướng dẫn dùng dữ liệu nhân sự
+    const baseSystemPrompt =
+      assistantConfig.system_prompt ||
+      "Bạn là trợ lý ảo Intimex Đắk Mil, chuyên hỗ trợ các câu hỏi về nhân sự.";
 
-- Nếu người dùng hỏi về nhân sự (tên, bộ phận, chức vụ, số điện thoại, …) thì hãy tra cứu TRONG dữ liệu này.
-- Nếu không tìm thấy thông tin tương ứng trong dữ liệu, hãy nói rõ là "Không thấy dữ liệu trong bảng nhân sự" và KHÔNG được bịa.
-- Nếu câu hỏi không liên quan tới nhân sự, bạn có thể bỏ qua dữ liệu này và trả lời như một trợ lý bình thường.
+    const hrInstruction = `
+Bạn được cung cấp một phần dữ liệu nhân sự (dạng JSON rút gọn) lấy từ file Bang_nhan_su_mo_rong.csv của Intimex Đắk Mil.
 
-Dữ liệu JSON được truyền trong nội dung câu hỏi bên dưới.
+- Nếu người dùng hỏi về nhân sự (họ tên, mã nhân viên, phòng ban, chức vụ, số điện thoại, tình trạng làm việc, v.v.) thì hãy tra cứu TRONG dữ liệu này.
+- Nếu KHÔNG tìm thấy thông tin tương ứng, hãy trả lời rõ: "Không thấy dữ liệu tương ứng trong bảng nhân sự." và KHÔNG được bịa.
+- Nếu câu hỏi không liên quan đến nhân sự, bạn có thể bỏ qua dữ liệu JSON này và trả lời như một trợ lý bình thường.
+- Luôn trả lời bằng tiếng Việt, lịch sự, dễ hiểu. Xưng "Em" và gọi người dùng là "Anh/Chị".
     `.trim();
 
-    const instructions = `${baseSystemPrompt}\n\n${excelInstruction}`;
+    const instructions = `${baseSystemPrompt}\n\n${hrInstruction}`;
 
     // 3) Gọi OpenAI Responses API
     const response = await client.responses.create({
@@ -154,7 +210,7 @@ Câu hỏi của người dùng:
 
 "${message}"
 
-Dữ liệu nhân sự (JSON rút gọn lấy từ Excel ${EXCEL_URL}):
+Dữ liệu nhân sự (JSON rút gọn, đã lọc theo câu hỏi, lấy từ ${HR_CSV_URL}):
 
 ${hrContext}
           `.trim(),
@@ -162,7 +218,23 @@ ${hrContext}
       ],
     });
 
-    const replyText = response.output_text || "Xin lỗi, hiện tại tôi không tạo được trả lời.";
+    // 4) Lấy text trả lời (SDK mới không có response.output_text)
+    let replyText = "Xin lỗi, hiện tại em chưa tạo được câu trả lời phù hợp.";
+
+    try {
+      const firstOutput = response.output?.[0];
+      const firstContent = firstOutput?.content?.[0];
+
+      // Tùy phiên bản SDK, text có thể là string hoặc object { value: string }
+      if (firstContent?.text) {
+        replyText =
+          typeof firstContent.text === "string"
+            ? firstContent.text
+            : firstContent.text.value || replyText;
+      }
+    } catch (e) {
+      console.error("Lỗi khi trích xuất text từ response:", e.message);
+    }
 
     res.json({
       reply: replyText,

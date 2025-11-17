@@ -404,7 +404,7 @@ app.post("/chat", async (req, res) => {
 
         // Tạo file CSV từ danh sách đã lọc để người dùng tải
         try {
-          downloadUrl = createHrDownloadFile(related);
+          downloadUrl = createHrDownloadFile(hrRows);
         } catch (e) {
           console.error("Lỗi tạo file CSV nhân sự:", e.message);
         }
@@ -548,3 +548,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server trợ lý nội bộ Intimex đang chạy trên port", PORT);
 });
+

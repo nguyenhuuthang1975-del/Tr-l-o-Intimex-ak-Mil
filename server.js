@@ -1,7 +1,5 @@
-/*******************************************************
- *  TRỢ LÝ ẢO INTIMEX ĐẮK MIL – SERVER.JS HOÀN CHỈNH
- *  BẢN ĐÃ TÍCH HỢP HÀM LỌC NHÂN SỰ THÔNG MINH
- *******************************************************/
+// server.js - Trợ lý ảo nội bộ Intimex Đắk Mil
+// 4 phần: (1) Giới thiệu, (2) Nhân sự, (3) Quy trình, (4) Số liệu & phân tích
 
 require("dotenv").config();
 const express = require("express");
@@ -13,7 +11,7 @@ const axios = require("axios");
 const { parse } = require("csv-parse/sync");
 const OpenAI = require("openai");
 
-// ================== CHECK OPENAI KEY ==================
+// ===== KIỂM TRA API KEY ==================================================
 
 if (!process.env.OPENAI_API_KEY) {
   console.error("⛔ ERROR: OPENAI_API_KEY is missing.");
@@ -24,7 +22,7 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ================== RATE LIMIT & RETRY ==================
+// ===== CẤU HÌNH GIỚI HẠN & RETRY OPENAI =================================
 
 const OPENAI_MAX_CONCURRENT = 2;
 let openaiCurrentRunning = 0;
@@ -54,13 +52,13 @@ async function callOpenAIWithRetry(payload, retries = 3, delayMs = 1000) {
   }
 }
 
-// ================== APP ==================
+// ===== APP CƠ BẢN =======================================================
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ================== DOWNLOAD FOLDER ==================
+// ===== THƯ MỤC LƯU FILE DOWNLOAD ========================================
 
 const DOWNLOAD_DIR = path.join(__dirname, "downloads");
 
@@ -70,7 +68,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
 
 app.use("/downloads", express.static(DOWNLOAD_DIR));
 
-// ================== LOAD CONFIG ==================
+// ===== LOAD assistant.yaml ==============================================
 
 const CONFIG_PATH = path.join(__dirname, "config", "assistant.yaml");
 
@@ -83,23 +81,21 @@ try {
     model: "gpt-4o-mini",
     temperature: 0.2,
     max_output_tokens: 900,
-    system_prompt: "Bạn là trợ lý nội bộ Intimex Đắk Mil."
+    system_prompt: "Bạn là trợ lý nội bộ Intimex Đắk Mil.",
   };
 }
 
-// ================== CSV URLs ==================
+// ===== CSV URLs =========================================================
 
 const INTRO_CSV_URL = "https://intimexdakmil.com/public_html/data/gioithieu.csv";
-
 const HR_CSV_URL =
   "https://intimexdakmil.com/public_html/data/Bang_nhan_su_mo_rong.csv";
 
 let introCache = { rows: [], loadedAt: 0 };
 let hrCache = { rows: [], loadedAt: 0 };
-
 const CACHE_TTL = 10 * 60 * 1000;
 
-// ================== LOAD CSV ==================
+// ===== HÀM ĐỌC CSV AN TOÀN ==============================================
 
 async function getCompanyIntroRows() {
   const now = Date.now();
@@ -107,11 +103,19 @@ async function getCompanyIntroRows() {
     return introCache.rows;
   }
 
-  const res = await axios.get(INTRO_CSV_URL, { responseType: "text" });
-  const records = parse(res.data, { columns: true, skip_empty_lines: true });
-
-  introCache = { rows: records, loadedAt: now };
-  return records;
+  try {
+    const res = await axios.get(INTRO_CSV_URL, { responseType: "text" });
+    const records = parse(res.data, { columns: true, skip_empty_lines: true });
+    introCache = { rows: records, loadedAt: now };
+    return records;
+  } catch (e) {
+    console.error("Lỗi tải CSV giới thiệu:", {
+      url: INTRO_CSV_URL,
+      status: e.response?.status,
+      message: e.message,
+    });
+    return introCache.rows.length ? introCache.rows : [];
+  }
 }
 
 async function getHrRows() {
@@ -120,14 +124,22 @@ async function getHrRows() {
     return hrCache.rows;
   }
 
-  const res = await axios.get(HR_CSV_URL, { responseType: "text" });
-  const records = parse(res.data, { columns: true, skip_empty_lines: true });
-
-  hrCache = { rows: records, loadedAt: now };
-  return records;
+  try {
+    const res = await axios.get(HR_CSV_URL, { responseType: "text" });
+    const records = parse(res.data, { columns: true, skip_empty_lines: true });
+    hrCache = { rows: records, loadedAt: now };
+    return records;
+  } catch (e) {
+    console.error("Lỗi tải CSV nhân sự:", {
+      url: HR_CSV_URL,
+      status: e.response?.status,
+      message: e.message,
+    });
+    return hrCache.rows.length ? hrCache.rows : [];
+  }
 }
 
-// ================== UTILS ==================
+// ===== TIỆN ÍCH XỬ LÝ CHUỖI ============================================
 
 function removeVietnameseTones(str) {
   if (!str) return "";
@@ -138,49 +150,61 @@ function removeVietnameseTones(str) {
     .replace(/Đ/g, "D");
 }
 
-// ================== HÀM LỌC NHÂN SỰ THÔNG MINH ==================
+// ===== HÀM LỌC NHÂN SỰ THÔNG MINH ======================================
 
 function searchRows(question, rows) {
-  const q = removeVietnameseTones((question || "").toLowerCase());
+  const qRaw = (question || "").toLowerCase();
+  const q = removeVietnameseTones(qRaw);
 
-  // -------- 1. LỌC "TRƯỞNG PHÒNG" --------
-  if (q.includes("truong phong") || q.includes("truong") || q.includes("tp")) {
+  // 1. Hỏi trưởng phòng / lãnh đạo
+  if (q.includes("truong phong") || q.includes("truong") || q.includes("giam doc")) {
     return rows.filter((row) => {
-      const chucVu = removeVietnameseTones(
-        (row["Chức vụ"] || row["chuc vu"] || "").toLowerCase()
-      );
+      const title =
+        removeVietnameseTones(
+          (row["Chức vụ"] ||
+            row["Chuc vu"] ||
+            row["Ch?c v?"] || // đề phòng file chưa sửa header
+            ""
+          ).toLowerCase()
+        );
       return (
-        chucVu.includes("truong") ||
-        chucVu.includes("giam doc") ||
-        chucVu.includes("tp") ||
-        chucVu.includes("truong bo phan")
+        title.includes("truong") ||
+        title.includes("giam doc") ||
+        title.includes("pho giam doc") ||
+        title.includes("truong bp")
       );
     });
   }
 
-  // -------- 2. LỌC THEO PHÒNG BAN --------
+  // 2. Hỏi theo phòng ban (phòng kinh doanh, phòng kế toán,...)
   if (q.includes("phong ")) {
-    const words = q.split(" ");
+    const words = q.split(/\s+/);
     const idx = words.indexOf("phong");
     if (idx !== -1 && words[idx + 1]) {
-      const pbKeyword = words[idx + 1];
-
+      const pbKeyword = words[idx + 1]; // ví dụ "kinh", "ke", ...
       return rows.filter((row) => {
-        const pb = removeVietnameseTones(
-          (row["Phòng ban"] || row["phong ban"] || "").toLowerCase()
-        );
+        const pb =
+          removeVietnameseTones(
+            (row["Phòng ban"] ||
+              row["Phong ban"] ||
+              row["Pḥng ban"] ||
+              ""
+            ).toLowerCase()
+          );
         return pb.includes(pbKeyword);
       });
     }
   }
 
-  // -------- 3. LỌC MẶC ĐỊNH (full text) --------
+  // 3. Mặc định: tìm theo full-text đơn giản
   let results = [];
   const keys = q.split(/\s+/).filter((w) => w.length > 1);
 
   for (const row of rows) {
     const text = removeVietnameseTones(
-      Object.values(row).join(" ").toLowerCase()
+      Object.values(row)
+        .join(" ")
+        .toLowerCase()
     );
     if (keys.some((k) => text.includes(k))) {
       results.push(row);
@@ -191,10 +215,10 @@ function searchRows(question, rows) {
   return results.length > 0 ? results : rows.slice(0, 20);
 }
 
-// ================== NHẬN DIỆN HỎI FULL DANH SÁCH ==================
+// ===== NHẬN DIỆN HỎI TOÀN BỘ NHÂN SỰ ====================================
 
 function isAllEmployeesQuery(message) {
-  const t = removeVietnameseTones(message.toLowerCase());
+  const t = removeVietnameseTones((message || "").toLowerCase());
 
   if (
     t.includes("toan bo nhan su") ||
@@ -203,8 +227,9 @@ function isAllEmployeesQuery(message) {
     t.includes("tat ca nhan vien") ||
     t.includes("tong danh sach nhan su") ||
     t.includes("tong danh sach nhan vien")
-  )
+  ) {
     return true;
+  }
 
   if (
     (t.includes("danh sach nhan su") || t.includes("danh sach nhan vien")) &&
@@ -213,15 +238,17 @@ function isAllEmployeesQuery(message) {
     !t.includes("phong ") &&
     !t.includes("dang lam") &&
     !t.includes("nghi")
-  )
+  ) {
     return true;
+  }
 
   return false;
 }
 
-// ================== TẠO FILE CSV ==================
+// ===== TẠO FILE CSV ======================================================
 
 function rowsToCsv(rows) {
+  if (!rows || rows.length === 0) return "";
   const headers = Object.keys(rows[0]);
   const lines = [headers.join(",")];
 
@@ -231,34 +258,46 @@ function rowsToCsv(rows) {
       .join(",");
     lines.push(line);
   }
+
   return lines.join("\n");
 }
 
 function createHrDownloadFile(rows) {
+  if (!rows || rows.length === 0) return null;
   const csv = rowsToCsv(rows);
   const filename = `nhan-su-${Date.now()}.csv`;
   const filePath = path.join(DOWNLOAD_DIR, filename);
   fs.writeFileSync(filePath, csv, "utf8");
-
   return `/downloads/${filename}`;
 }
 
-// ================== CLASSIFY QUESTION ==================
+// ===== PHÂN LOẠI CÂU HỎI 4 PHẦN =========================================
 
-function classifyQuestion(msg) {
-  const t = removeVietnameseTones(msg.toLowerCase());
+function classifyQuestion(message) {
+  const t = removeVietnameseTones((message || "").toLowerCase());
+
   if (t.includes("nhan su") || t.includes("nhan vien")) return 2;
   if (t.includes("quy trinh") || t.includes("sop")) return 3;
-  if (t.includes("doanh thu") || t.includes("kpi")) return 4;
+  if (t.includes("doanh thu") || t.includes("kpi") || t.includes("bao cao")) return 4;
   return 1;
 }
 
-// ================== ROUTE CHAT ==================
+// ===== ROUTES ============================================================
+
+app.get("/health", async (req, res) => {
+  res.json({
+    status: "ok",
+    model: assistantConfig.model,
+    hr_csv_url: HR_CSV_URL,
+    company_intro_csv_url: INTRO_CSV_URL,
+  });
+});
 
 app.post("/chat", async (req, res) => {
-  const { message } = req.body;
-  if (!message)
-    return res.status(400).json({ error: "Thiếu nội dung message." });
+  const { message } = req.body || {};
+  if (!message) {
+    return res.status(400).json({ error: "Thiếu 'message' trong body." });
+  }
 
   const section = classifyQuestion(message);
   let dataContext = "";
@@ -273,81 +312,83 @@ app.post("/chat", async (req, res) => {
       const related = searchRows(message, hrRows);
       const rowsForFile = isAllEmployeesQuery(message) ? hrRows : related;
 
-      downloadUrl = createHrDownloadFile(rowsForFile);
+      if (rowsForFile && rowsForFile.length) {
+        downloadUrl = createHrDownloadFile(rowsForFile);
+      }
 
       dataContext = JSON.stringify(related.slice(0, 40), null, 2);
-    }
-
-    if (section === 1) {
+    } else if (section === 1) {
       sectionLabel = "PHAN_1_GIOI_THIEU";
       const intro = await getCompanyIntroRows();
       const related = searchRows(message, intro);
       dataContext = JSON.stringify(related.slice(0, 40), null, 2);
-    }
-
-    if (section === 3) {
+    } else if (section === 3) {
       sectionLabel = "PHAN_3_QUY_TRINH";
-      dataContext = "Chưa kết nối dữ liệu quy trình.";
-    }
-
-    if (section === 4) {
+      dataContext = "Dữ liệu quy trình nội bộ chưa được kết nối.";
+    } else if (section === 4) {
       sectionLabel = "PHAN_4_SO_LIEU";
-      dataContext = "Chưa kết nối dữ liệu số liệu.";
+      dataContext = "Dữ liệu số liệu / KPI chưa được kết nối.";
     }
 
     const instructions = `
 ${assistantConfig.system_prompt}
 
 PHẦN HIỆN TẠI: ${sectionLabel}
-Trả lời bằng tiếng Việt, xưng Em – gọi Anh/Chị. Không bịa số liệu.
-Nếu là PHẦN 2: chỉ dựa vào JSON nhân sự bên dưới.
-`;
+- Trả lời bằng tiếng Việt, xưng Em – gọi Anh/Chị.
+- Không bịa số liệu.
+- Nếu không thấy dữ liệu phù hợp trong JSON thì nói rõ là chưa đủ dữ liệu.
+`.trim();
 
     const openaiResponse = await withOpenAIConcurrencyLimit(() =>
       callOpenAIWithRetry({
-        model: assistantConfig.model,
-        temperature: 0.2,
-        max_output_tokens: 800,
+        model: assistantConfig.model || "gpt-4o-mini",
+        temperature: assistantConfig.temperature ?? 0.2,
+        max_output_tokens: assistantConfig.max_output_tokens || 900,
         instructions,
         input: [
           {
             role: "user",
             content: `
-Câu hỏi:
+Câu hỏi của người dùng:
 
 "${message}"
 
-Dữ liệu nội bộ liên quan:
+Dữ liệu nội bộ liên quan (JSON, có thể đã rút gọn):
+
 ${dataContext}
-            `
-          }
-        ]
+            `.trim(),
+          },
+        ],
       })
     );
 
-    let reply = "Không tạo được câu trả lời.";
+    let reply = "Em chưa tạo được câu trả lời phù hợp.";
     try {
-      reply =
-        openaiResponse.output?.[0]?.content?.[0]?.text ||
-        openaiResponse.output?.[0]?.content?.[0]?.text?.value ||
-        reply;
-    } catch {}
+      const firstOutput = openaiResponse.output?.[0];
+      const firstContent = firstOutput?.content?.[0];
+      if (firstContent?.text) {
+        reply =
+          typeof firstContent.text === "string"
+            ? firstContent.text
+            : firstContent.text.value || reply;
+      }
+    } catch (e) {
+      console.error("Lỗi trích xuất câu trả lời OpenAI:", e.message);
+    }
 
-    res.json({
+    return res.json({
       reply,
-      download_url: downloadUrl,
       section,
-      section_label: sectionLabel
+      section_label: sectionLabel,
+      download_url: downloadUrl,
     });
   } catch (e) {
     console.error("🔥 LỖI /chat:", e.message);
-    res.status(500).json({
-      error: "Lỗi máy chủ."
-    });
+    return res.status(500).json({ error: "Lỗi máy chủ /chat." });
   }
 });
 
-// ================== START SERVER ==================
+// ===== START SERVER ======================================================
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

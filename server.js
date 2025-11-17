@@ -183,7 +183,7 @@ function searchRows(question, rows) {
     const text = Object.values(row).join(" ").toLowerCase();
     if (keys.some((k) => text.includes(k))) {
       results.push(row);
-      if (results.length >= 50) break;
+      if (results.length >= 500) break; // cho phép tối đa 500 dòng
     }
   }
 
@@ -228,6 +228,11 @@ function rowsToCsv(rows) {
 
 // Tạo file CSV trong thư mục downloads và trả về đường dẫn để frontend tải
 function createHrDownloadFile(rows) {
+  if (!rows || rows.length === 0) {
+    // Nếu không có dòng nào, vẫn tạo file trống với header
+    rows = [{}];
+  }
+
   const csv = rowsToCsv(rows);
   const timestamp = Date.now();
   const filename = `nhan-su-${timestamp}.csv`;
@@ -366,6 +371,40 @@ function classifyQuestion(message) {
   return bestSection;
 }
 
+// ===== NHẬN DIỆN CÂU HỎI "TOÀN BỘ DANH SÁCH NHÂN SỰ" ====================
+
+function isAllEmployeesQuery(message) {
+  const text = removeVietnameseTones((message || "").toLowerCase());
+
+  // Các kiểu câu hỏi mang nghĩa "tất cả nhân sự"
+  if (
+    text.includes("toan bo nhan su") ||
+    text.includes("toan bo nhan vien") ||
+    text.includes("tat ca nhan su") ||
+    text.includes("tat ca nhan vien") ||
+    text.includes("tong danh sach nhan su") ||
+    text.includes("tong danh sach nhan vien")
+  ) {
+    return true;
+  }
+
+  // Nếu chỉ nói chung chung "danh sach nhan su"/"danh sach nhan vien"
+  // mà KHÔNG kèm điều kiện (trưởng phòng / phòng / đang làm việc / ...)
+  if (
+    (text.includes("danh sach nhan su") ||
+      text.includes("danh sach nhan vien")) &&
+    !text.includes("truong phong") &&
+    !text.includes("phong ") &&
+    !text.includes("dang lam viec") &&
+    !text.includes("da nghi") &&
+    !text.includes("nghi viec")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 // ===== ROUTES ===========================================================
 
 app.get("/health", async (req, res) => {
@@ -398,13 +437,14 @@ app.post("/chat", async (req, res) => {
         const hrRows = await getHrRows();
         const totalEmployees = hrRows.length;
 
-        // Lọc theo câu hỏi (tên, phòng ban, v.v.)
+        // Lọc theo câu hỏi (tên, phòng ban, v.v.) để trả lời trong chat
         const related = searchRows(message, hrRows);
         const relatedJson = createContext(related);
 
-        // Tạo file CSV từ danh sách đã lọc để người dùng tải
+        // Quyết định xuất file full hay file đã lọc
         try {
-          downloadUrl = createHrDownloadFile(hrRows);
+          const rowsForFile = isAllEmployeesQuery(message) ? hrRows : related;
+          downloadUrl = createHrDownloadFile(rowsForFile);
         } catch (e) {
           console.error("Lỗi tạo file CSV nhân sự:", e.message);
         }
@@ -548,4 +588,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server trợ lý nội bộ Intimex đang chạy trên port", PORT);
 });
-

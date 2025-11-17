@@ -87,9 +87,9 @@ try {
 
 // ===== CSV URLs =========================================================
 
-const INTRO_CSV_URL = "https://intimexdakmil.com/public_html/data/gioithieu.csv";
+const INTRO_CSV_URL = "https://intimexdakmil.com/public_html/data/gioithieu.txt";
 const HR_CSV_URL =
-  "https://intimexdakmil.com/public_html/data/Bang_nhan_su_mo_rong.csv";
+  "https://intimexdakmil.com/public_html/data/Bang_nhan_su_mo_rong.txt";
 
 let introCache = { rows: [], loadedAt: 0 };
 let hrCache = { rows: [], loadedAt: 0 };

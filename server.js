@@ -1,4 +1,4 @@
-// server.js - Trợ lý ảo nội bộ Intimex Đắk Mil
+﻿// server.js - Trợ lý ảo nội bộ Intimex Đắk Mil
 // 4 phần: (1) Giới thiệu, (2) Nhân sự, (3) Quy trình, (4) Số liệu & phân tích
 
 require("dotenv").config();
@@ -21,6 +21,43 @@ if (!process.env.OPENAI_API_KEY) {
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+// ===== CẤU HÌNH GIỚI HẠN & RETRY OPENAI =================================
+
+// Giới hạn số request gửi đồng thời tới OpenAI
+const OPENAI_MAX_CONCURRENT = 2;
+let openaiCurrentRunning = 0;
+
+// Hỗ trợ giới hạn concurrency
+async function withOpenAIConcurrencyLimit(fn) {
+  while (openaiCurrentRunning >= OPENAI_MAX_CONCURRENT) {
+    // chờ 150ms rồi kiểm tra lại
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  openaiCurrentRunning++;
+  try {
+    return await fn();
+  } finally {
+    openaiCurrentRunning--;
+  }
+}
+
+// Gọi OpenAI kèm retry + exponential backoff nếu gặp 429
+async function callOpenAIWithRetry(payload, retries = 3, delayMs = 1000) {
+  try {
+    return await client.responses.create(payload);
+  } catch (err) {
+    if (
+      (err.status === 429 || err.code === "rate_limit_exceeded") &&
+      retries > 0
+    ) {
+      console.warn(`OpenAI 429, retry sau ${delayMs}ms...`);
+      await new Promise((r) => setTimeout(r, delayMs));
+      return callOpenAIWithRetry(payload, retries - 1, delayMs * 2);
+    }
+    throw err;
+  }
+}
 
 // ===== APP CƠ BẢN =======================================================
 
@@ -49,6 +86,7 @@ try {
       "Bạn là trợ lý ảo nội bộ Intimex Đắk Mil, hỗ trợ công ty, nhân sự, quy trình, số liệu.",
   };
 }
+
 // ===== CSV GIỚI THIỆU CÔNG TY (PHẦN 1) ================================
 
 const COMPANY_INTRO_CSV_URL =
@@ -66,7 +104,10 @@ async function getCompanyIntroRows() {
 
   console.log("Đang tải CSV giới thiệu công ty từ:", COMPANY_INTRO_CSV_URL);
 
-  const res = await axios.get(COMPANY_INTRO_CSV_URL, { responseType: "text" });
+  const res = await axios.get(COMPANY_INTRO_CSV_URL, {
+    responseType: "text",
+    timeout: 8000,
+  });
 
   const records = parse(res.data, {
     columns: true,
@@ -99,7 +140,10 @@ async function getHrRows() {
 
   console.log("Đang tải CSV nhân sự từ:", HR_CSV_URL);
 
-  const res = await axios.get(HR_CSV_URL, { responseType: "text" });
+  const res = await axios.get(HR_CSV_URL, {
+    responseType: "text",
+    timeout: 8000,
+  });
 
   const records = parse(res.data, {
     columns: true,
@@ -115,8 +159,10 @@ async function getHrRows() {
   return records;
 }
 
+// ===== HÀM TÌM KIẾM & RÚT GỌN CONTEXT ============================
+
 function searchRows(question, rows) {
-  const q = question.toLowerCase();
+  const q = (question || "").toLowerCase();
   const keys = q.split(/\s+/).filter((w) => w.length > 1);
 
   let results = [];
@@ -134,8 +180,11 @@ function searchRows(question, rows) {
 }
 
 function createContext(rows) {
+  const MAX_CONTEXT_CHARS = 6500; // giảm nhẹ so với 7000 để an toàn token
   const json = JSON.stringify(rows.slice(0, 40), null, 2);
-  return json.length > 7000 ? json.substring(0, 7000) + "...(rút gọn)" : json;
+  return json.length > MAX_CONTEXT_CHARS
+    ? json.substring(0, MAX_CONTEXT_CHARS) + "...(rút gọn)"
+    : json;
 }
 
 // ===== HÀM BỎ DẤU + PHÂN LOẠI CÂU HỎI 4 PHẦN ===========================
@@ -163,7 +212,7 @@ const KEYWORDS = {
     "gia tri cot loi",
     "linh vuc hoat dong",
     "thong tin cong ty",
-    "dia chi cong ty"
+    "dia chi cong ty",
   ],
   2: [
     // Nhân sự
@@ -182,7 +231,7 @@ const KEYWORDS = {
     "ho so nhan su",
     "so luong nhan vien",
     "nghi viec",
-    "dang lam viec"
+    "dang lam viec",
   ],
   3: [
     // Quy trình
@@ -199,7 +248,7 @@ const KEYWORDS = {
     "phe duyet",
     "luong duyet",
     "form bieu",
-    "mau bieu"
+    "mau bieu",
   ],
   4: [
     // Số liệu / phân tích
@@ -218,7 +267,7 @@ const KEYWORDS = {
     "san luong",
     "thang",
     "quy",
-    "nam"
+    "nam",
   ],
 };
 
@@ -265,6 +314,7 @@ function classifyQuestion(message) {
 }
 
 // ===== ROUTES ===========================================================
+
 app.get("/health", async (req, res) => {
   res.json({
     status: "ok",
@@ -273,7 +323,6 @@ app.get("/health", async (req, res) => {
     company_intro_csv_url: COMPANY_INTRO_CSV_URL,
   });
 });
-
 
 // Route chính chatbot
 app.post("/chat", async (req, res) => {
@@ -288,7 +337,7 @@ app.post("/chat", async (req, res) => {
   let dataContext = "";
 
   try {
-       if (section === 2) {
+    if (section === 2) {
       // ===== PHẦN 2: NHÂN SỰ – dùng CSV =====
       sectionLabel = "PHAN_2_NHAN_SU";
       try {
@@ -312,7 +361,6 @@ ${relatedJson}
         dataContext =
           "Không đọc được dữ liệu nhân sự từ CSV. Khong the tinh TONG_SO_NHAN_SU.";
       }
-
     } else if (section === 3) {
       // ===== PHẦN 3: QUY TRÌNH – TODO: nối vào tài liệu quy trình =====
       sectionLabel = "PHAN_3_QUY_TRINH";
@@ -323,34 +371,34 @@ ${relatedJson}
       sectionLabel = "PHAN_4_SO_LIEU";
       dataContext =
         "So lieu kinh doanh/tai chinh/KPI chua duoc ket noi. Backend can bo sung query du lieu phu hop.";
-   } else {
-  // ===== PHẦN 1: GIỚI THIỆU CÔNG TY =====
-  sectionLabel = "PHAN_1_GIOI_THIEU";
-  try {
-    const introRows = await getCompanyIntroRows();
+    } else {
+      // ===== PHẦN 1: GIỚI THIỆU CÔNG TY =====
+      sectionLabel = "PHAN_1_GIOI_THIEU";
+      try {
+        const introRows = await getCompanyIntroRows();
 
-    // Nếu gioithieu.csv có dạng key,value,description,... thì cứ đưa hết cho model
-    const introJson = JSON.stringify(introRows, null, 2);
+        // Dùng searchRows để chỉ lấy những dòng liên quan (nếu có),
+        // tránh gửi toàn bộ CSV quá dài
+        const relatedIntro = searchRows(message, introRows);
+        const introJson = createContext(relatedIntro);
 
-    dataContext = `
+        dataContext = `
 DU_LIEU_GIOI_THIEU_CONG_TY_CSV:
 ${introJson}
-    `.trim();
-  } catch (e) {
-    console.error("Lỗi đọc CSV giới thiệu công ty:", e.message);
-    dataContext =
-      "Khong doc duoc du lieu gioi thieu cong ty tu CSV (gioithieu.csv).";
-  }
-}
+        `.trim();
+      } catch (e) {
+        console.error("Lỗi đọc CSV giới thiệu công ty:", e.message);
+        dataContext =
+          "Khong doc duoc du lieu gioi thieu cong ty tu CSV (gioithieu.csv).";
+      }
+    }
 
+    // 2) Ghép instructions từ assistant.yaml + nhấn mạnh section
+    const baseSystemPrompt =
+      assistantConfig.system_prompt ||
+      "Bạn là Trợ lý nội bộ Intimex Đắk Mil, hỗ trợ công ty, nhân sự, quy trình, số liệu.";
 
-
-  // 2) Ghép instructions từ assistant.yaml + nhấn mạnh section
-  const baseSystemPrompt =
-    assistantConfig.system_prompt ||
-    "Bạn là Trợ lý nội bộ Intimex Đắk Mil, hỗ trợ công ty, nhân sự, quy trình, số liệu.";
-
-  const instructions = `
+    const instructions = `
 ${baseSystemPrompt}
 
 Loại câu hỏi hiện tại: ${sectionLabel}.
@@ -360,20 +408,21 @@ Loại câu hỏi hiện tại: ${sectionLabel}.
 - Nếu là PHAN_1_GIOI_THIEU: chỉ được mô tả công ty dựa trên thông tin context, nếu thiếu thì nói rõ.
 
 Luôn trả lời bằng tiếng Việt, xưng Em, gọi Anh/Chị.
-`.trim();
+    `.trim();
 
-  // 3) Gọi OpenAI
-  let openaiResponse;
-  try {
-    openaiResponse = await client.responses.create({
-      model: assistantConfig.model || "gpt-4o-mini",
-      temperature: assistantConfig.temperature ?? 0.2,
-      max_output_tokens: assistantConfig.max_output_tokens || 900,
-      instructions,
-      input: [
-        {
-          role: "user",
-          content: `
+    // 3) Gọi OpenAI qua lớp concurrency + retry
+    let openaiResponse;
+    try {
+      openaiResponse = await withOpenAIConcurrencyLimit(() =>
+        callOpenAIWithRetry({
+          model: assistantConfig.model || "gpt-4o-mini",
+          temperature: assistantConfig.temperature ?? 0.2,
+          max_output_tokens: assistantConfig.max_output_tokens || 900,
+          instructions,
+          input: [
+            {
+              role: "user",
+              content: `
 Câu hỏi của người dùng:
 
 "${message}"
@@ -381,47 +430,54 @@ Câu hỏi của người dùng:
 Dữ liệu nội bộ liên quan (JSON / văn bản rút gọn):
 
 ${dataContext}
-          `.trim(),
-        },
-      ],
-    });
-  } catch (err) {
-    // Xử lý rate limit 429
-    if (err.status === 429 || err.code === "rate_limit_exceeded") {
-      console.error("OpenAI rate limit:", err.message);
-      return res.status(429).json({
-        error:
-          "Hệ thống đang gửi quá nhiều yêu cầu đến máy chủ AI. Anh/Chị vui lòng thử lại sau ít phút.",
+              `.trim(),
+            },
+          ],
+        })
+      );
+    } catch (err) {
+      // Xử lý rate limit 429 (sau khi đã retry)
+      if (err.status === 429 || err.code === "rate_limit_exceeded") {
+        console.error("OpenAI rate limit (sau khi retry):", err.message);
+        return res.status(429).json({
+          error:
+            "Hệ thống đang gửi quá nhiều yêu cầu đến máy chủ AI. Anh/Chị vui lòng thử lại sau ít phút.",
+        });
+      }
+
+      console.error("Lỗi OpenAI:", err.message);
+      return res.status(500).json({
+        error: "Có lỗi khi kết nối tới máy chủ AI.",
       });
     }
 
-    console.error("Lỗi OpenAI:", err.message);
+    // 4) Lấy text trả lời
+    let replyText = "Em chưa tạo được câu trả lời phù hợp.";
+    try {
+      const firstOutput = openaiResponse.output?.[0];
+      const firstContent = firstOutput?.content?.[0];
+      if (firstContent?.text) {
+        replyText =
+          typeof firstContent.text === "string"
+            ? firstContent.text
+            : firstContent.text.value || replyText;
+      }
+    } catch (e) {
+      console.error("Lỗi trích xuất text từ OpenAI:", e.message);
+    }
+
+    // 5) Trả về cho frontend
+    return res.json({
+      reply: replyText,
+      section,
+      section_label: sectionLabel,
+    });
+  } catch (outerErr) {
+    console.error("Lỗi không mong muốn ở /chat:", outerErr.message);
     return res.status(500).json({
-      error: "Có lỗi khi kết nối tới máy chủ AI.",
+      error: "Có lỗi không mong muốn xảy ra ở máy chủ.",
     });
   }
-
-  // 4) Lấy text trả lời
-  let replyText = "Em chưa tạo được câu trả lời phù hợp.";
-  try {
-    const firstOutput = openaiResponse.output?.[0];
-    const firstContent = firstOutput?.content?.[0];
-    if (firstContent?.text) {
-      replyText =
-        typeof firstContent.text === "string"
-          ? firstContent.text
-          : firstContent.text.value || replyText;
-    }
-  } catch (e) {
-    console.error("Lỗi trích xuất text từ OpenAI:", e.message);
-  }
-
-  // 5) Trả về cho frontend
-  return res.json({
-    reply: replyText,
-    section,
-    section_label: sectionLabel,
-  });
 });
 
 // ===== START SERVER =====================================================

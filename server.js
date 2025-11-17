@@ -265,7 +265,7 @@ function rowsToCsv(rows) {
 function createHrDownloadFile(rows) {
   if (!rows || rows.length === 0) return null;
   const csv = rowsToCsv(rows);
-  const filename = `nhan-su-${Date.now()}.csv`;
+  const filename = `nhan-su-${Date.now()}.txt`;
   const filePath = path.join(DOWNLOAD_DIR, filename);
   fs.writeFileSync(filePath, csv, "utf8");
   return `/downloads/${filename}`;

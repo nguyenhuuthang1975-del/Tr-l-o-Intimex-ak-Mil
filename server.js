@@ -1,4 +1,4 @@
-﻿// server.js - Trợ lý ảo nội bộ Intimex Đắk Mil
+// server.js - Trợ lý ảo nội bộ Intimex Đắk Mil
 // 4 phần: (1) Giới thiệu, (2) Nhân sự, (3) Quy trình, (4) Số liệu & phân tích
 
 require("dotenv").config();
@@ -64,6 +64,18 @@ async function callOpenAIWithRetry(payload, retries = 3, delayMs = 1000) {
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// ===== THƯ MỤC LƯU FILE DOWNLOAD ========================================
+
+const DOWNLOAD_DIR = path.join(__dirname, "downloads");
+
+// Tạo thư mục downloads nếu chưa có
+if (!fs.existsSync(DOWNLOAD_DIR)) {
+  fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+}
+
+// Cho phép tải file tĩnh trong thư mục /downloads
+app.use("/downloads", express.static(DOWNLOAD_DIR));
 
 // ===== LOAD assistant.yaml ==============================================
 
@@ -185,6 +197,47 @@ function createContext(rows) {
   return json.length > MAX_CONTEXT_CHARS
     ? json.substring(0, MAX_CONTEXT_CHARS) + "...(rút gọn)"
     : json;
+}
+
+// ===== HÀM TẠO FILE CSV NHÂN SỰ ĐỂ DOWNLOAD ======================
+
+function rowsToCsv(rows) {
+  if (!rows || rows.length === 0) return "";
+
+  const headers = Object.keys(rows[0]);
+  const lines = [];
+
+  // dòng tiêu đề
+  lines.push(headers.join(","));
+
+  // từng dòng dữ liệu
+  for (const row of rows) {
+    const line = headers
+      .map((h) => {
+        const value = (row[h] ?? "").toString();
+        // escape dấu "
+        const safe = value.replace(/"/g, '""');
+        return `"${safe}"`;
+      })
+      .join(",");
+    lines.push(line);
+  }
+
+  return lines.join("\n");
+}
+
+// Tạo file CSV trong thư mục downloads và trả về đường dẫn để frontend tải
+function createHrDownloadFile(rows) {
+  const csv = rowsToCsv(rows);
+  const timestamp = Date.now();
+  const filename = `nhan-su-${timestamp}.csv`;
+  const filePath = path.join(DOWNLOAD_DIR, filename);
+
+  fs.writeFileSync(filePath, csv, "utf8");
+
+  // Trả đường dẫn cho client (relative URL, cùng domain với server)
+  const downloadUrl = `/downloads/${filename}`;
+  return downloadUrl;
 }
 
 // ===== HÀM BỎ DẤU + PHÂN LOẠI CÂU HỎI 4 PHẦN ===========================
@@ -335,6 +388,7 @@ app.post("/chat", async (req, res) => {
   const section = classifyQuestion(message); // 1|2|3|4
   let sectionLabel = "";
   let dataContext = "";
+  let downloadUrl = null; // URL file tải (nếu có)
 
   try {
     if (section === 2) {
@@ -347,6 +401,13 @@ app.post("/chat", async (req, res) => {
         // Lọc theo câu hỏi (tên, phòng ban, v.v.)
         const related = searchRows(message, hrRows);
         const relatedJson = createContext(related);
+
+        // Tạo file CSV từ danh sách đã lọc để người dùng tải
+        try {
+          downloadUrl = createHrDownloadFile(related);
+        } catch (e) {
+          console.error("Lỗi tạo file CSV nhân sự:", e.message);
+        }
 
         // Ghép context: vừa có tổng số, vừa có JSON chi tiết (rút gọn)
         dataContext = `
@@ -471,6 +532,7 @@ ${dataContext}
       reply: replyText,
       section,
       section_label: sectionLabel,
+      download_url: downloadUrl, // nếu là nhân sự & tạo file thành công thì sẽ có URL
     });
   } catch (outerErr) {
     console.error("Lỗi không mong muốn ở /chat:", outerErr.message);

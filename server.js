@@ -57,16 +57,16 @@ async function callGroqWithRetry(payload, retries = 3, delayMs = 1000) {
   }
 }
 
-// ===== APP CƠ BẢN =======================================================
-
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// phục vụ file tĩnh trong thư mục ./public
+app.use(express.static(path.join(__dirname, "public")));
+
 // ===== THƯ MỤC LƯU FILE DOWNLOAD ========================================
 
 const DOWNLOAD_DIR = path.join(__dirname, "downloads");
-
 if (!fs.existsSync(DOWNLOAD_DIR)) {
   fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 }

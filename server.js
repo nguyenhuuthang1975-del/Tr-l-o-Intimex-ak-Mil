@@ -11,42 +11,47 @@ const axios = require("axios");
 const { parse } = require("csv-parse/sync");
 const OpenAI = require("openai");
 
-// ===== KIỂM TRA API KEY ==================================================
+// ===== KIỂM TRA API KEY (GROQ) ===========================================
 
-if (!process.env.OPENAI_API_KEY) {
-  console.error("⛔ ERROR: OPENAI_API_KEY is missing.");
+const GROQ_API_KEY = process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY;
+
+if (!GROQ_API_KEY) {
+  console.error("⛔ ERROR: GROQ_API_KEY (hoặc OPENAI_API_KEY) is missing.");
   process.exit(1);
 }
 
 const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: GROQ_API_KEY,
+  // Groq dùng OpenAI-compatible endpoint
+  baseURL: "https://api.groq.com/openai/v1",
 });
 
-// ===== CẤU HÌNH GIỚI HẠN & RETRY OPENAI =================================
+// ===== CẤU HÌNH GIỚI HẠN & RETRY GROQ ===================================
 
-const OPENAI_MAX_CONCURRENT = 2;
-let openaiCurrentRunning = 0;
+const GROQ_MAX_CONCURRENT = 2;
+let groqCurrentRunning = 0;
 
-async function withOpenAIConcurrencyLimit(fn) {
-  while (openaiCurrentRunning >= OPENAI_MAX_CONCURRENT) {
+async function withGroqConcurrencyLimit(fn) {
+  while (groqCurrentRunning >= GROQ_MAX_CONCURRENT) {
     await new Promise((r) => setTimeout(r, 150));
   }
-  openaiCurrentRunning++;
+  groqCurrentRunning++;
   try {
     return await fn();
   } finally {
-    openaiCurrentRunning--;
+    groqCurrentRunning--;
   }
 }
 
-async function callOpenAIWithRetry(payload, retries = 3, delayMs = 1000) {
+async function callGroqWithRetry(payload, retries = 3, delayMs = 1000) {
   try {
-    return await client.responses.create(payload);
+    // Dùng chat.completions thay vì responses.create
+    return await client.chat.completions.create(payload);
   } catch (err) {
     if ((err.status === 429 || err.code === "rate_limit_exceeded") && retries > 0) {
-      console.warn(`⚠️ OpenAI 429, retry sau ${delayMs}ms...`);
+      console.warn(`⚠️ Groq 429, retry sau ${delayMs}ms...`);
       await new Promise((r) => setTimeout(r, delayMs));
-      return callOpenAIWithRetry(payload, retries - 1, delayMs * 2);
+      return callGroqWithRetry(payload, retries - 1, delayMs * 2);
     }
     throw err;
   }
@@ -78,7 +83,7 @@ try {
 } catch (e) {
   console.warn("⚠️ Không tìm thấy assistant.yaml – dùng config mặc định.");
   assistantConfig = {
-    model: "gpt-4o-mini",
+    model: "llama-3.1-8b-instant", // model Groq mặc định gợi ý
     temperature: 0.2,
     max_output_tokens: 900,
     system_prompt: "Bạn là trợ lý nội bộ Intimex Đắk Mil.",
@@ -339,13 +344,17 @@ PHẦN HIỆN TẠI: ${sectionLabel}
 - Nếu không thấy dữ liệu phù hợp trong JSON thì nói rõ là chưa đủ dữ liệu.
 `.trim();
 
-    const openaiResponse = await withOpenAIConcurrencyLimit(() =>
-      callOpenAIWithRetry({
-        model: assistantConfig.model || "gpt-4o-mini",
+    // ===== GỌI GROQ (CHAT COMPLETIONS) ==================================
+    const groqResponse = await withGroqConcurrencyLimit(() =>
+      callGroqWithRetry({
+        model: assistantConfig.model || "llama-3.1-8b-instant",
         temperature: assistantConfig.temperature ?? 0.2,
-        max_output_tokens: assistantConfig.max_output_tokens || 900,
-        instructions,
-        input: [
+        max_tokens: assistantConfig.max_output_tokens || 900,
+        messages: [
+          {
+            role: "system",
+            content: instructions,
+          },
           {
             role: "user",
             content: `
@@ -364,16 +373,12 @@ ${dataContext}
 
     let reply = "Em chưa tạo được câu trả lời phù hợp.";
     try {
-      const firstOutput = openaiResponse.output?.[0];
-      const firstContent = firstOutput?.content?.[0];
-      if (firstContent?.text) {
-        reply =
-          typeof firstContent.text === "string"
-            ? firstContent.text
-            : firstContent.text.value || reply;
+      const firstChoice = groqResponse.choices?.[0];
+      if (firstChoice?.message?.content) {
+        reply = firstChoice.message.content;
       }
     } catch (e) {
-      console.error("Lỗi trích xuất câu trả lời OpenAI:", e.message);
+      console.error("Lỗi trích xuất câu trả lời Groq:", e.message);
     }
 
     return res.json({
@@ -392,5 +397,5 @@ ${dataContext}
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 Trợ lý Intimex đang chạy PORT", PORT);
+  console.log("🚀 Trợ lý Intimex (Groq) đang chạy PORT", PORT);
 });

@@ -392,6 +392,22 @@ ${dataContext}
     return res.status(500).json({ error: "Lỗi máy chủ /chat." });
   }
 });
+app.get("/debug-data", async (req, res) => {
+  try {
+    const intro = await getCompanyIntroRows();
+    const hr = await getHrRows();
+    res.json({
+      intro_url: INTRO_CSV_URL,
+      hr_url: HR_CSV_URL,
+      intro_rows: intro.length,
+      hr_rows: hr.length,
+      sample_intro: intro.slice(0, 3),
+      sample_hr: hr.slice(0, 3),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ===== START SERVER ======================================================
 

@@ -218,7 +218,7 @@ function searchRows(question, rows) {
     );
     if (keys.some((k) => text.includes(k))) {
       results.push(row);
-      if (results.length >= 500) break;
+      if (results.length >= 100) break;
     }
   }
 
@@ -326,18 +326,26 @@ app.post("/chat", async (req, res) => {
         downloadUrl = createHrDownloadFile(rowsForFile);
       }
 
-      dataContext = JSON.stringify(related.slice(0, 40), null, 2);
+      dataContext = JSON.stringify(related.slice(0, 15), null, 2);
     } else if (section === 1) {
       sectionLabel = "PHAN_1_GIOI_THIEU";
       const intro = await getCompanyIntroRows();
       const related = searchRows(message, intro);
-      dataContext = JSON.stringify(related.slice(0, 40), null, 2);
+      dataContext = JSON.stringify(related.slice(0, 15), null, 2);
     } else if (section === 3) {
       sectionLabel = "PHAN_3_QUY_TRINH";
       dataContext = "Dữ liệu quy trình nội bộ chưa được kết nối.";
     } else if (section === 4) {
       sectionLabel = "PHAN_4_SO_LIEU";
       dataContext = "Dữ liệu số liệu / KPI chưa được kết nối.";
+    }
+
+    // Giới hạn độ dài context gửi sang Groq để tránh vượt giới hạn tokens
+    const MAX_CONTEXT_CHARS = 6000; // ~1500-2000 tokens
+    if (dataContext && dataContext.length > MAX_CONTEXT_CHARS) {
+      dataContext =
+        dataContext.slice(0, MAX_CONTEXT_CHARS) +
+        "\n\n(Đã rút gọn bớt dữ liệu nội bộ để phù hợp giới hạn Groq.)";
     }
 
     const instructions = `
@@ -354,10 +362,10 @@ PHẦN HIỆN TẠI: ${sectionLabel}
       callGroqWithRetry({
         model: assistantConfig.model || "llama-3.1-8b-instant",
         temperature: assistantConfig.temperature ?? 0.2,
-        max_tokens:
-          assistantConfig.max_tokens ||
-          assistantConfig.max_output_tokens ||
-          900,
+        max_tokens: Math.min(
+          assistantConfig.max_tokens || assistantConfig.max_output_tokens || 900,
+          512
+        ),
         messages: [
           {
             role: "system",

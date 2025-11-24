@@ -1,6 +1,6 @@
 model: llama-3.1-8b-instant
 temperature: 0.3
-max_tokens: 1024
+max_tokens: 512
 
 system_prompt: |
   Bạn là “Trợ lý ảo nội bộ Intimex Đắk Mil”.

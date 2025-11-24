@@ -20,9 +20,9 @@ if (!GROQ_API_KEY) {
   process.exit(1);
 }
 
+// Groq dùng OpenAI-compatible endpoint
 const client = new OpenAI({
   apiKey: GROQ_API_KEY,
-  // Groq dùng OpenAI-compatible endpoint
   baseURL: "https://api.groq.com/openai/v1",
 });
 
@@ -48,14 +48,19 @@ async function callGroqWithRetry(payload, retries = 3, delayMs = 1000) {
     // Dùng chat.completions thay vì responses.create
     return await client.chat.completions.create(payload);
   } catch (err) {
-    if ((err.status === 429 || err.code === "rate_limit_exceeded") && retries > 0) {
-      console.warn(`⚠️ Groq 429, retry sau ${delayMs}ms...`);
+    const status = err.status || err.response?.status;
+    const data = err.response?.data;
+    console.error("🔥 LỖI GROQ:", status, data || err.message || err);
+    if ((status === 429 || status === 500 || status === 503) && retries > 0) {
+      console.warn(`⚠️ Groq ${status}, retry sau ${delayMs}ms...`);
       await new Promise((r) => setTimeout(r, delayMs));
       return callGroqWithRetry(payload, retries - 1, delayMs * 2);
     }
     throw err;
   }
 }
+
+// ===== APP CƠ BẢN =======================================================
 
 const app = express();
 app.use(cors());
@@ -85,7 +90,7 @@ try {
   assistantConfig = {
     model: "llama-3.1-8b-instant", // model Groq mặc định gợi ý
     temperature: 0.2,
-    max_output_tokens: 900,
+    max_tokens: 900,
     system_prompt: "Bạn là trợ lý nội bộ Intimex Đắk Mil.",
   };
 }
@@ -349,7 +354,10 @@ PHẦN HIỆN TẠI: ${sectionLabel}
       callGroqWithRetry({
         model: assistantConfig.model || "llama-3.1-8b-instant",
         temperature: assistantConfig.temperature ?? 0.2,
-        max_tokens: assistantConfig.max_output_tokens || 900,
+        max_tokens:
+          assistantConfig.max_tokens ||
+          assistantConfig.max_output_tokens ||
+          900,
         messages: [
           {
             role: "system",
@@ -388,10 +396,12 @@ ${dataContext}
       download_url: downloadUrl,
     });
   } catch (e) {
-    console.error("🔥 LỖI /chat:", e.message);
+    console.error("🔥 LỖI /chat:", e.response?.data || e.message || e);
     return res.status(500).json({ error: "Lỗi máy chủ /chat." });
   }
 });
+
+// Route debug để xem dữ liệu đọc được từ CSV
 app.get("/debug-data", async (req, res) => {
   try {
     const intro = await getCompanyIntroRows();
